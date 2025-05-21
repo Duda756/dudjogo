@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Vampires vs Werewolves - Asteroids Style</title>
+<style>
+  /* Basic reset */
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  html, body {
+    width: 100%;
+    height: 100%;
+    background: radial-gradient(ellipse at center, #0b0b0f 0%, #000000 80%);
+    color: #eee;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    overflow: hidden;
+  }
+  #gameCanvas {
+    display: block;
+    background: radial-gradient(circle at center, #1a1a21 0%, #000000 90%);
+    margin: auto;
+    border: 3px solid #550000;
+    border-radius: 10px;
+    box-shadow: 0 0 15px #900000;
+    /* Remove image background, replaced with pixel art pattern */
+    background-color: #0a0a10;
+    image-rendering: pixelated;
+  }
+  #ui {
+    position: fixed;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 10;
+    display: flex;
+    gap: 15px;
+    align-items: center;
+  }
+  #specialButton {
+    background: linear-gradient(45deg, #b30000, #7b0000);
+    border: none;
+    padding: 10px 20px;
+    color: #fff;
+    font-weight: 700;
+    font-size: 1rem;
+    border-radius: 8px;
+    cursor: pointer;
+    box-shadow: 0 0 10px #b30000;
+    transition: background 0.3s, box-shadow 0.3s;
+    user-select: none;
+  }
+  #specialButton:disabled {
+    background: #550000;
+    box-shadow: none;
+    cursor: not-allowed;
+  }
+  #score {
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: #ff4444;
+    text-shadow: 0 0 8px #a00000;
+  }
+  #gameOverOverlay {
+    position: fixed;
+    top: 0;
+    left:0;
+    width: 100vw;
+    height:100vh;
+    background: rgba(0,0,0,0.85);
+    color: #ff4444;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    font-size: 2rem;
+    font-weight: 900;
+    letter-spacing: 3px;
+    z-index: 20;
+    user-select:none;
+  }
+  #gameOverOverlay button {
+    margin-top: 20px;
+    background: #b30000;
+    border: none;
+    color: white;
+    font-size: 1.2rem;
+    padding: 10px 25px;
+    border-radius: 10px;
+    cursor: pointer;
+    font-weight: 700;
+    box-shadow: 0 0 12px #b30000;
+    transition: background 0.3s;
+  }
+  #gameOverOverlay button:hover {
+    background: #7b0000;
+  }
+</style>
+</head>
+<body>
+<div id="ui">
+  <button id="specialButton" title="Activate Special Ability (Power Blast)">SPECIAL</button>
+  <div id="score">Score: 0</div>
+</div>
+<canvas id="gameCanvas" width="800" height="600" tabindex="0"></canvas>
+<div id="gameOverOverlay" style="display:none;">
+  GAME OVER<br />
+  <button id="restartBtn">RESTART</button>
+</div>
+<script>
+(() => {
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+  const width = canvas.width;
+  const height = canvas.height;
+
+  // Draw pixel art background with a dark pixel pattern
+  // Create an offscreen canvas to generate pixel pattern once
+  const pixelSize = 8;
+  const patternCanvas = document.createElement('canvas');
+  patternCanvas.width = pixelSize * 4;
+  patternCanvas.height = pixelSize * 4;
+  const pctx = patternCanvas.getContext('2d');
+
+  // Colors for pixel background
+  const darkColor1 = '#111218';
+  const darkColor2 = '#0a0a10';
+
+  // We'll fix random stars with a stable seed approach:
+  // pre-set star positions on each square:
+  const starPositions = [
+    {x:1,y:2},
+    {x:3,y:0}
+  ];
+
+  for(let x=0; x<4; x++){
+    for(let y=0; y<4; y++){
+      if((x+y) % 2 === 0){
+        pctx.fillStyle = darkColor1;
+      } else {
+        pctx.fillStyle = darkColor2;
+      }
+      pctx.fillRect(x*pixelSize, y*pixelSize, pixelSize, pixelSize);
+
+      // Add fixed white star pixels in some squares to simulate pixel stars
+      for (const star of starPositions) {
+        if (star.x === x && star.y === y) {
+          pctx.fillStyle = '#ffffff';
+          // place a single pixel star in the square center
+          const starX = x * pixelSize + Math.floor(pixelSize / 2);
+          const starY = y * pixelSize + Math.floor(pixelSize / 2);
+          pctx.fillRect(starX, starY, 1, 1);
+        }
+      }
+    }
+  }
+
+  const bgPattern = ctx.createPattern(patternCanvas, 'repeat');
+
+  // Game variables
+  let keys = {};
+  let score = 0;
+  let gameOver = false;
+  let specialAvailable = true;
+  let specialActive = false;
+  const specialDuration = 3000; // 3 seconds in ms
+  const specialCooldown = 10000; // 10 seconds cooldown
+  let specialTimer = 0;
+  let lastTime = 0;
+
+  // Utility functions
+  function randomRange(min, max) {
+    return Math.random() * (max - min) + min;
+  }
+
+  function wrapPosition(pos, max) {
+    if (pos < 0) return pos + max;
+    if (pos > max) return pos - max;
+    return pos;
+  }
+
+  function angleToVector(angle) {
+    return { x: Math.cos(angle), y: Math.sin(angle) };
+  }
+
+  // Classes for game objects
+  class Ship {
+    constructor() {
+      this.pos = { x: width / 2, y: height / 2 };
+      this.vel = { x: 0, y: 0 };
+      this.angle = -Math.PI / 2;
+      this.radius = 15;
+      this.acceleration = 0.15;
+      this.friction = 0.97;
+      this.rotationSpeed = 0.07;
+      this.color = '#b30000'; // Vampire red
+      this.cooldown = 0;
+      this.cooldownMax = 15; // frames between bullets
+    }
+
+    update() {
+      // Controls rotation
+      if (keys.ArrowLeft || keys.KeyA) this.angle -= this.rotationSpeed;
+      if (keys.ArrowRight || keys.KeyD) this.angle += this.rotationSpeed;
+
+      // Controls acceleration
+      if (keys.ArrowUp || keys.KeyW) {
+        let accel = angleToVector(this.angle);
+        this.vel.x += accel.x * this.acceleration;
+        this.vel.y += accel.y * this.acceleration;
+      } else {
+        // Apply friction when no acceleration pressed
+        this.vel.x *= this.friction;
+        this.vel.y *= this.friction;
+      }
+
+      // Limit speed
+      const speedLimit = 6;
+      const speed = Math.sqrt(this.vel.x * this.vel.x + this.vel.y * this.vel.y);
+      if (speed > speedLimit) {
+        this.vel.x = (this.vel.x / speed) * speedLimit;
+        this.vel.y = (this.vel.y / speed) * speedLimit;
+      }
+
+      // Update position with wrap
+      this.pos.x = wrapPosition(this.pos.x + this.vel.x, width);
+      this.pos.y = wrapPosition(this.pos.y + this.vel.y, height);
+
+      if (this.cooldown > 0) this.cooldown--;
+    }
+
+    draw(ctx) {
+      ctx.save();
+      ctx.translate(this.pos.x, this.pos.y);
+      ctx.rotate(this.angle);
+
+      // Ship shape - vampire fang motif
+      ctx.fillStyle = this.color;
+      ctx.strokeStyle = '#ff4d4d';
+      ctx.lineWidth = 2;
+
+      ctx.beginPath();
+      ctx.moveTo(20, 0);
+      ctx.lineTo(-15, -12);
+      ctx.lineTo(-5, 0);
+      ctx.lineTo(-15, 12);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      // Fangs (white triangles)
+      ctx.fillStyle = 'white';
+      ctx.beginPath();
+      ctx.moveTo(20, 0);
+      ctx.lineTo(15, -5);
+      ctx.lineTo(15, 5);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    shoot() {
+      if (this.cooldown === 0) {
+        const bulletVel = angleToVector(this.angle);
+        const bulletSpeed = 10;
+        const bullet = new Bullet(
+          this.pos.x + bulletVel.x * 20,
+          this.pos.y + bulletVel.y * 20,
+          bulletVel.x * bulletSpeed + this.vel.x,
+          bulletVel.y * bulletSpeed + this.vel.y
+        );
+        this.cooldown = this.cooldownMax;
+        return bullet;
+      }
+      return null;
+    }
+  }
+
+  class Bullet {
+    constructor(x, y, vx, vy) {
+      this.pos = { x: x, y: y };
+      this.vel = { x: vx, y: vy };
+      this.radius = 3;
+      this.color = '#ff9999';
+      this.life = 50; // frames
+    }
+
+    update() {
+      this.pos.x = wrapPosition(this.pos.x + this.vel.x, width);
+      this.pos.y = wrapPosition(this.pos.y + this.vel.y, height);
+      this.life--;
+    }
+
+    draw(ctx) {
+      ctx.beginPath();
+      ctx.fillStyle = this.color;
+      ctx.shadowColor = '#ff6666';
+      ctx.shadowBlur = 8;
+      ctx.arc(this.pos.x, this.pos.y, this.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+
+    isDead() {
+      return this.life <= 0;
+    }
+  }
+
+  class Werewolf {
+    constructor(x, y, size) {
+      this.pos = { x, y };
+      this.size = size; // 1, 2, or 3 represent big to small
+      this.radius = 20 * size;
+      this.angle = randomRange(0, Math.PI * 2);
+      this.speed = randomRange(0.5, 1.5) + (3 - size) * 0.4;
+      this.vel = {
+        x: Math.cos(this.angle) * this.speed,
+        y: Math.sin(this.angle) * this.speed,
+      };
+      this.rotation = randomRange(-0.03, 0.03);
+      this.rotationAngle = 0;
+      this.color = '#8a5a2e'; // Werewolf brown base
+      this.hitGlow = 0; // for hit effect
+    }
+
+    update() {
+      this.pos.x = wrapPosition(this.pos.x + this.vel.x, width);
+      this.pos.y = wrapPosition(this.pos.y + this.vel.y, height);
+      this.rotationAngle += this.rotation;
+      if (this.hitGlow > 0) this.hitGlow -= 0.1;
+    }
+
+    draw(ctx) {
+      ctx.save();
+      ctx.translate(this.pos.x, this.pos.y);
+      ctx.rotate(this.rotationAngle);
+
+      // Werewolf shape: circle with ears and claws
+      let grad = ctx.createRadialGradient(0, 0, this.radius*0.2, 0, 0, this.radius);
+      if(this.hitGlow>0){
+        grad.addColorStop(0, `rgba(255,50,50,${this.hitGlow})`);
+        grad.addColorStop(1, '#4a2e1e');
+      } else {
+        grad.addColorStop(0, '#7b4a2c');
+        grad.addColorStop(1, '#3e2a19');
+      }
+      ctx.fillStyle = grad;
+      ctx.shadowColor = this.hitGlow > 0 ? 'red' : 'black';
+      ctx.shadowBlur = this.hitGlow > 0 ? 12 : 5;
+      ctx.beginPath();
+      ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Ears
+      ctx.fillStyle = '#5b381c';
+      ctx.beginPath();
+      ctx.moveTo(-this.radius * 0.7, -this.radius * 0.8);
+      ctx.lineTo(-this.radius * 0.4, -this.radius * 0.3);
+      ctx.lineTo(-this.radius * 0.1, -this.radius * 0.7);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.moveTo(this.radius * 0.7, -this.radius * 0.8);
+      ctx.lineTo(this.radius * 0.4, -this.radius * 0.3);
+      ctx.lineTo(this.radius * 0.1, -this.radius * 0.7);
+      ctx.closePath();
+      ctx.fill();
+
+      // Claws (3 claws on bottom front)
+      ctx.strokeStyle = '#d47e3f';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(-this.radius*0.4, this.radius*0.6);
+      ctx.lineTo(-this.radius*0.2, this.radius*0.9);
+      ctx.moveTo(0, this.radius*0.65);
+      ctx.lineTo(0, this.radius*0.95);
+      ctx.moveTo(this.radius*0.4, this.radius*0.6);
+      ctx.lineTo(this.radius*0.25, this.radius*0.95);
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    hit() {
+      this.hitGlow = 1;
+    }
+  }
+
+  // Game state
+  let ship = null;
+  let bullets = [];
+  let werewolves = [];
+  const maxWerewolves = 8;
+  let level = 1;
+
+  // Add initial werewolves
+  function createWerewolves(level) {
+    let count = Math.min(3 + level * 2, maxWerewolves);
+    for (let i = 0; i < count; i++) {
+      // Spawn far from ship
+      let x, y;
+      do {
+        x = randomRange(0, width);
+        y = randomRange(0, height);
+      } while (Math.hypot(x - ship.pos.x, y - ship.pos.y) < 150);
+      let size = 3; // Initially spawn big
+      werewolves.push(new Werewolf(x, y, size));
+    }
+  }
+
+  // Collision detection
+  function collides(obj1, obj2) {
+    let dx = obj1.pos.x - obj2.pos.x;
+    let dy = obj1.pos.y - obj2.pos.y;
+    let dist = Math.sqrt(dx * dx + dy * dy);
+    return dist < (obj1.radius + obj2.radius);
+  }
+
+  // Handle bullets hitting werewolves
+  function handleCollisions() {
+    bullets.forEach((bullet, bIndex) => {
+      werewolves.forEach((wolf, wIndex) => {
+        if (collides(bullet, wolf)) {
+          // Hit detected
+          bullets.splice(bIndex, 1);
+          if (wolf.size > 1) {
+            // Split into smaller werewolves
+            let newSize = wolf.size - 1;
+            for (let i = 0; i < 2; i++) {
+              let angle = randomRange(0, Math.PI * 2);
+              let speed = randomRange(1, 3);
+              let newWolf = new Werewolf(wolf.pos.x, wolf.pos.y, newSize);
+              newWolf.vel.x = Math.cos(angle) * speed;
+              newWolf.vel.y = Math.sin(angle) * speed;
+              werewolves.push(newWolf);
+            }
+          }
+          werewolves.splice(wIndex, 1);
+          score += 10 * wolf.size;
+          updateScore();
+          return;
+        }
+      });
+    });
+  }
+
+  // When special activated, clear all werewolves on screen and increase score
+  function activateSpecial() {
+    if (!specialAvailable) return;
+
+    specialActive = true;
+    specialAvailable = false;
+    specialTimer = 0;
+
+    // Destroy all werewolves with animation
+    score += werewolves.reduce((acc, w) => acc + 20 * w.size, 0);
+    updateScore();
+
+    werewolves.forEach(wolf => wolf.hit());
+    setTimeout(() => {
+      werewolves.length = 0;
+    }, 400);
+  }
+
+  function updateScore() {
+    document.getElementById('score').textContent = `Score: ${score}`;
+  }
+
+  // Key listeners
+  window.addEventListener('keydown', e => {
+    keys[e.code] = true;
+    // Prevent scrolling with arrow keys in canvas
+    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) {
+      e.preventDefault();
+    }
+  });
+  window.addEventListener('keyup', e => {
+    keys[e.code] = false;
+  });
+
+  // Special button
+  const specialBtn = document.getElementById('specialButton');
+  specialBtn.addEventListener('click', () => {
+    if (specialAvailable) {
+      activateSpecial();
+      specialBtn.disabled = true;
+      // Re-enable after cooldown
+      setTimeout(() => {
+        specialAvailable = true;
+        specialBtn.disabled = false;
+      }, specialCooldown);
+    }
+  });
+
+  // Restart button
+  const restartBtn = document.getElementById('restartBtn');
+  const gameOverOverlay = document.getElementById('gameOverOverlay');
+  restartBtn.addEventListener('click', () => {
+    resetGame();
+    gameOverOverlay.style.display = 'none';
+    canvas.focus();
+  });
+
+  function resetGame() {
+    score = 0;
+    updateScore();
+    gameOver = false;
+    ship = new Ship();
+    bullets = [];
+    werewolves = [];
+    level = 1;
+    specialAvailable = true;
+    specialActive = false;
+    specialBtn.disabled = false;
+    createWerewolves(level);
+    lastTime = 0;
+    loop(0);
+  }
+
+  // Main game loop using timestamp
+  function loop(time = 0) {
+    if (gameOver) return;
+
+    // Calculate delta time if needed
+    const delta = time - lastTime;
+    lastTime = time;
+
+    // Fill background with pixel art pattern
+    ctx.fillStyle = bgPattern;
+    ctx.fillRect(0, 0, width, height);
+
+    // Update objects
+    ship.update();
+
+    // Shooting with space key
+    if (keys.Space) {
+      const b = ship.shoot();
+      if (b) bullets.push(b);
+    }
+
+    bullets.forEach(b => b.update());
+    bullets = bullets.filter(b => !b.isDead());
+
+    werewolves.forEach(w => w.update());
+
+    // Handle collisions
+    handleCollisions();
+
+    // Special active effect (red glowing screen)
+    if (specialActive) {
+      specialTimer += delta;
+      if (specialTimer >= specialDuration) {
+        specialActive = false;
+      }
+      ctx.fillStyle = 'rgba(255, 50, 50, 0.15)';
+      ctx.fillRect(0, 0, width, height);
+    }
+
+    // Draw everything
+    ship.draw(ctx);
+    bullets.forEach(b => b.draw(ctx));
+    werewolves.forEach(w => w.draw(ctx));
+
+    // Check collision of ship with werewolves
+    for (let wolf of werewolves) {
+      if (collides(ship, wolf)) {
+        gameOver = true;
+        showGameOver();
+        return;
+      }
+    }
+
+    // Level progression when all werewolves are dead
+    if (werewolves.length === 0) {
+      level++;
+      createWerewolves(level);
+    }
+
+    requestAnimationFrame(loop);
+  }
+
+  function showGameOver() {
+    gameOverOverlay.style.display = 'flex';
+  }
+
+  // Focus canvas for keyboard events immediately
+  canvas.focus();
+
+  // Start the game
+  resetGame();
+})();
+</script>
+</body>
+</html>
+
